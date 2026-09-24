@@ -1,0 +1,159 @@
+name: Build Helium Pacman Package & Update Repo
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # Check daily at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force rebuild even if version matches'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-build:
+    name: Check Upstream & Package for Arch Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools zstd curl jq
+
+      - name: Query Latest Upstream Helium Version
+        id: upstream
+        run: |
+          RELEASE_JSON=$(curl -sL https://api.github.com/repos/imputnet/helium-linux/releases/latest)
+          VERSION=$(echo "${RELEASE_JSON}" | jq -r .tag_name)
+          DOWNLOAD_URL="https://github.com/imputnet/helium-linux/releases/download/${VERSION}/helium-${VERSION}-x86_64_linux.tar.xz"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "url=${DOWNLOAD_URL}" >> $GITHUB_OUTPUT
+          echo "Found latest version: ${VERSION}"
+
+      - name: Check Existing Package Version in Release
+        id: check_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_PKG="helium-browser-bin-${{ steps.upstream.outputs.version }}-1-x86_64.pkg.tar.zst"
+          EXISTS="false"
+          if gh release view repo >/dev/null 2>&1; then
+            if gh release view repo --json assets -q ".assets[].name" | grep -qx "${TARGET_PKG}"; then
+              EXISTS="true"
+            fi
+          fi
+          echo "exists=${EXISTS}" >> $GITHUB_OUTPUT
+          echo "Package ${TARGET_PKG} exists in release: ${EXISTS}"
+
+      - name: Build Arch Linux Package & Update Repo DB
+        if: steps.check_release.outputs.version != 'true' || inputs.force_build == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+          TAR_URL: ${{ steps.upstream.outputs.url }}
+        run: |
+          mkdir -p build_staging arch_repo
+          cd build_staging
+
+          echo "Downloading upstream Helium tarball..."
+          curl -sSL -o helium.tar.xz "${TAR_URL}"
+
+          echo "Extracting tarball..."
+          tar -xf helium.tar.xz
+          ARCH_DIR=$(find . -maxdepth 1 -type d -name "helium-*-x86_64_linux")
+
+          PKG_ROOT="$(pwd)/pkgroot"
+          mkdir -p "${PKG_ROOT}/opt/helium-browser-bin" \
+                   "${PKG_ROOT}/usr/share/applications" \
+                   "${PKG_ROOT}/usr/share/pixmaps" \
+                   "${PKG_ROOT}/usr/share/icons/hicolor/256x256/apps" \
+                   "${PKG_ROOT}/usr/bin"
+
+          cp -a "${ARCH_DIR}/"* "${PKG_ROOT}/opt/helium-browser-bin/"
+          chmod 755 "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper" 2>/dev/null || true
+
+          if [ -f "${PKG_ROOT}/opt/helium-browser-bin/helium.desktop" ]; then
+            cp -a "${PKG_ROOT}/opt/helium-browser-bin/helium.desktop" "${PKG_ROOT}/usr/share/applications/helium.desktop"
+          fi
+          if [ -f "${PKG_ROOT}/opt/helium-browser-bin/product_logo_256.png" ]; then
+            cp -a "${PKG_ROOT}/opt/helium-browser-bin/product_logo_256.png" "${PKG_ROOT}/usr/share/pixmaps/helium-browser.png"
+            cp -a "${PKG_ROOT}/opt/helium-browser-bin/product_logo_256.png" "${PKG_ROOT}/usr/share/icons/hicolor/256x256/apps/helium-browser.png"
+          fi
+
+          ln -sf /opt/helium-browser-bin/helium-wrapper "${PKG_ROOT}/usr/bin/helium-browser"
+
+          # Generate .PKGINFO
+          INSTALLED_SIZE=$(find "${PKG_ROOT}" -type f -exec stat -c %s {} + | awk '{s+=$1} END {print s}')
+          BUILD_DATE=$(date +%s)
+
+          cat << PKGINFO_EOF > "${PKG_ROOT}/.PKGINFO"
+          pkgname = helium-browser-bin
+          pkgbase = helium-browser-bin
+          pkgver = ${VERSION}-1
+          pkgdesc = Private, fast, and honest web browser based on Chromium (Latest/Stable)
+          url = https://github.com/imputnet/helium-linux
+          builddate = ${BUILD_DATE}
+          packager = Aditya <aditya@local>
+          size = ${INSTALLED_SIZE}
+          arch = x86_64
+          license = GPL-3.0-only
+          license = BSD-3-Clause
+          depend = alsa-lib
+          depend = dbus
+          depend = gtk3
+          depend = hicolor-icon-theme
+          depend = libcups
+          depend = libpulse
+          depend = libva
+          depend = libxss
+          depend = nss
+          depend = ttf-liberation
+          depend = udev
+          depend = xdg-utils
+          optdepend = pipewire: WebRTC desktop sharing under Wayland
+          provides = helium-browser-bin
+          provides = helium-browser-beta-bin=${VERSION}
+          conflict = helium-browser-beta-bin
+          PKGINFO_EOF
+          sed -i 's/^[ \t]*//' "${PKG_ROOT}/.PKGINFO"
+
+          # Generate .MTREE
+          (cd "${PKG_ROOT}" && bsdtar -czf .MTREE --format=mtree --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' . 2>/dev/null || true)
+
+          # Compress Package
+          PKG_FILE="helium-browser-bin-${VERSION}-1-x86_64.pkg.tar.zst"
+          (cd "${PKG_ROOT}" && bsdtar -cf - .PKGINFO $([ -f .MTREE ] && echo .MTREE) opt usr | zstd -T0 -19 -f -o "../arch_repo/${PKG_FILE}")
+
+          cd ../arch_repo
+
+          # Pull existing repo DB from release if present
+          if gh release view repo >/dev/null 2>&1; then
+            gh release download repo -p "custom-helium.db.tar.gz" -p "custom-helium.files.tar.gz" 2>/dev/null || true
+          fi
+
+          # Update Repo with Docker Archlinux
+          docker run --rm -v "$(pwd)":/repo -w /repo archlinux:latest bash -c \
+            "pacman -Sy --noconfirm pacman-contrib >/dev/null 2>&1 && repo-add -n -R custom-helium.db.tar.gz ${PKG_FILE}"
+
+          rm -f custom-helium.db custom-helium.files
+          cp -f custom-helium.db.tar.gz custom-helium.db
+          cp -f custom-helium.files.tar.gz custom-helium.files
+
+          echo "Repository files updated:"
+          ls -la
+
+          # Publish to GitHub Release
+          if gh release view repo >/dev/null 2>&1; then
+            gh release upload repo * --clobber
+          else
+            gh release create repo * \
+              --title "Helium Arch Linux Repository" \
+              --notes "Automated Pacman repository for Helium Browser on Arch Linux. Add this repo to /etc/pacman.conf to receive automated updates on 'pacman -Syu'."
+          fi
