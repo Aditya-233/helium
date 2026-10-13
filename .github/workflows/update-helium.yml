@@ -62,8 +62,12 @@ jobs:
           VERSION: ${{ steps.upstream.outputs.version }}
           TAR_URL: ${{ steps.upstream.outputs.url }}
         run: |
-          mkdir -p build_staging arch_repo
-          cd build_staging
+          BUILD_DIR="${GITHUB_WORKSPACE}/build_staging"
+          ARCH_REPO="${GITHUB_WORKSPACE}/arch_repo"
+          PKG_ROOT="${BUILD_DIR}/pkgroot"
+
+          mkdir -p "${BUILD_DIR}" "${ARCH_REPO}" "${PKG_ROOT}"
+          cd "${BUILD_DIR}"
 
           echo "Downloading upstream Helium tarball..."
           curl -sSL -o helium.tar.xz "${TAR_URL}"
@@ -72,7 +76,6 @@ jobs:
           tar -xf helium.tar.xz
           ARCH_DIR=$(find . -maxdepth 1 -type d -name "helium-*-x86_64_linux")
 
-          PKG_ROOT="$(pwd)/pkgroot"
           mkdir -p "${PKG_ROOT}/opt/helium-browser-bin" \
                    "${PKG_ROOT}/usr/share/applications" \
                    "${PKG_ROOT}/usr/share/pixmaps" \
@@ -80,7 +83,7 @@ jobs:
                    "${PKG_ROOT}/usr/bin"
 
           cp -a "${ARCH_DIR}/"* "${PKG_ROOT}/opt/helium-browser-bin/"
-          cp -a "$GITHUB_WORKSPACE/helium-wrapper" "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
+          cp -a "${GITHUB_WORKSPACE}/helium-wrapper" "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
           chmod 755 "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
 
           if [ -f "${PKG_ROOT}/opt/helium-browser-bin/helium.desktop" ]; then
@@ -134,9 +137,9 @@ jobs:
 
           # Compress Package
           PKG_FILE="helium-browser-bin-${VERSION}-1-x86_64.pkg.tar.zst"
-          (cd "${PKG_ROOT}" && bsdtar -cf - .PKGINFO $([ -f .MTREE ] && echo .MTREE) opt usr | zstd -T0 -19 -f -o "../arch_repo/${PKG_FILE}")
+          (cd "${PKG_ROOT}" && bsdtar -cf - .PKGINFO $([ -f .MTREE ] && echo .MTREE) opt usr | zstd -T0 -19 -f -o "${ARCH_REPO}/${PKG_FILE}")
 
-          cd ../arch_repo
+          cd "${ARCH_REPO}"
 
           # Pull existing repo DB from release if present
           if gh release view repo -R "${{ github.repository }}" >/dev/null 2>&1; then
@@ -144,7 +147,7 @@ jobs:
           fi
 
           # Update Repo with Docker Archlinux
-          docker run --rm -v "$(pwd)":/repo -w /repo archlinux:latest bash -c \
+          docker run --rm -v "${ARCH_REPO}":/repo -w /repo archlinux:latest bash -c \
             "pacman -Sy --noconfirm pacman-contrib >/dev/null 2>&1 && repo-add -n -R custom-helium.db.tar.gz ${PKG_FILE}"
 
           rm -f custom-helium.db custom-helium.files
