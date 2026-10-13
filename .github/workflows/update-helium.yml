@@ -3,6 +3,9 @@ name: Build Helium Pacman Package & Update Repo
 on:
   schedule:
     - cron: '0 6 * * *' # Check daily at 06:00 UTC
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       force_build:
@@ -44,8 +47,8 @@ jobs:
         run: |
           TARGET_PKG="helium-browser-bin-${{ steps.upstream.outputs.version }}-1-x86_64.pkg.tar.zst"
           EXISTS="false"
-          if gh release view repo >/dev/null 2>&1; then
-            if gh release view repo --json assets -q ".assets[].name" | grep -qx "${TARGET_PKG}"; then
+          if gh release view repo -R "${{ github.repository }}" >/dev/null 2>&1; then
+            if gh release view repo -R "${{ github.repository }}" --json assets -q ".assets[].name" | grep -qx "${TARGET_PKG}"; then
               EXISTS="true"
             fi
           fi
@@ -53,7 +56,7 @@ jobs:
           echo "Package ${TARGET_PKG} exists in release: ${EXISTS}"
 
       - name: Build Arch Linux Package & Update Repo DB
-        if: steps.check_release.outputs.version != 'true' || inputs.force_build == true
+        if: ${{ inputs.force_build == true || steps.check_release.outputs.exists != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.upstream.outputs.version }}
@@ -77,54 +80,7 @@ jobs:
                    "${PKG_ROOT}/usr/bin"
 
           cp -a "${ARCH_DIR}/"* "${PKG_ROOT}/opt/helium-browser-bin/"
-          # Patch helium-wrapper with Arch Linux flags support (~/.config/helium-browser-flags.conf or helium-flags.conf)
-          cat << 'WRAPPER_EOF' > "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
-#!/usr/bin/env bash
-export CHROME_VERSION_EXTRA="Arch Linux"
-CHROME_WRAPPER="$(readlink -f "$0")"
-HERE="$(dirname "$CHROME_WRAPPER")"
-
-XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-"$HOME/.config"}"
-SYS_CONF="/etc/helium-browser-flags.conf"
-USR_CONF="${XDG_CONFIG_HOME}/helium-browser-flags.conf"
-FLAGS=()
-
-append_flags_file() {
-  local file="$1"
-  [[ -r "$file" ]] || return 0
-  local line safe_line
-  while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    case "$line" in
-      *\$\(*|*\`*) echo "Warning: ignoring unsafe line in $file: $line" >&2; continue ;;
-    esac
-    set -f
-    safe_line=${line//$/\\$}
-    safe_line=${safe_line//~/\\~}
-    eval "set -- $safe_line"
-    set +f
-    for token in "$@"; do FLAGS+=("$token"); done
-  done < "$file"
-}
-
-append_flags_file "$SYS_CONF"
-if [[ -r "$USR_CONF" ]]; then
-  append_flags_file "$USR_CONF"
-elif [[ -r "${XDG_CONFIG_HOME}/helium-flags.conf" ]]; then
-  append_flags_file "${XDG_CONFIG_HOME}/helium-flags.conf"
-elif [[ -r "${XDG_CONFIG_HOME}/helium-flags" ]]; then
-  append_flags_file "${XDG_CONFIG_HOME}/helium-flags"
-fi
-
-if [[ -n "${HELIUM_USER_FLAGS:-}" ]]; then
-  read -r -a ENV_FLAGS <<< "$HELIUM_USER_FLAGS"
-  FLAGS+=("${ENV_FLAGS[@]}")
-fi
-
-export CHROME_WRAPPER
-export LD_LIBRARY_PATH="$HERE:$HERE/lib:$HERE/lib.target${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-exec "$HERE/helium" "${FLAGS[@]}" "$@"
-WRAPPER_EOF
+          cp -a "$GITHUB_WORKSPACE/helium-wrapper" "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
           chmod 755 "${PKG_ROOT}/opt/helium-browser-bin/helium-wrapper"
 
           if [ -f "${PKG_ROOT}/opt/helium-browser-bin/helium.desktop" ]; then
@@ -183,8 +139,8 @@ WRAPPER_EOF
           cd ../arch_repo
 
           # Pull existing repo DB from release if present
-          if gh release view repo >/dev/null 2>&1; then
-            gh release download repo -p "custom-helium.db.tar.gz" -p "custom-helium.files.tar.gz" 2>/dev/null || true
+          if gh release view repo -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release download repo -R "${{ github.repository }}" -p "custom-helium.db.tar.gz" -p "custom-helium.files.tar.gz" 2>/dev/null || true
           fi
 
           # Update Repo with Docker Archlinux
@@ -199,10 +155,10 @@ WRAPPER_EOF
           ls -la
 
           # Publish to GitHub Release
-          if gh release view repo >/dev/null 2>&1; then
-            gh release upload repo * --clobber
+          if gh release view repo -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload repo * -R "${{ github.repository }}" --clobber
           else
-            gh release create repo * \
+            gh release create repo * -R "${{ github.repository }}" \
               --title "Helium Arch Linux Repository" \
               --notes "Automated Pacman repository for Helium Browser on Arch Linux. Add this repo to /etc/pacman.conf to receive automated updates on 'pacman -Syu'."
           fi
