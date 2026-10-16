@@ -1,7 +1,7 @@
 # Helium Browser — Arch Linux Pacman Repository
 
-Automated Arch Linux binary repository for **Helium Browser** (`helium-browser-bin`).  
-Maintained with automated GitHub Actions tracking upstream releases from [imputnet/helium-linux](https://github.com/imputnet/helium-linux).
+Automated Arch Linux binary repository for **Helium Browser** (`helium-browser-bin`), directly mirroring and building upstream [aur.archlinux.org/packages/helium-browser-bin](https://aur.archlinux.org/packages/helium-browser-bin).  
+Maintained with automated GitHub Actions running official Arch Linux `makepkg`.
 
 ---
 
@@ -26,10 +26,10 @@ sudo pacman -S helium-browser-bin
 
 ## Automated Updates
 
-Whenever [imputnet/helium-linux](https://github.com/imputnet/helium-linux) releases a new stable version, a GitHub Actions workflow in this repository:
-1. Downloads the official release binary.
-2. Packages it into an Arch `.pkg.tar.zst` package.
-3. Updates `custom-helium.db.tar.gz` and `custom-helium.files.tar.gz` using native `repo-add`.
+Whenever [aur.archlinux.org/packages/helium-browser-bin](https://aur.archlinux.org/packages/helium-browser-bin) updates:
+1. GitHub Actions automatically syncs the exact AUR files (`PKGBUILD`, patches, `LICENSE`, `.SRCINFO`).
+2. Builds the official package using `makepkg` inside an Arch Linux container (with PGP and checksum verification).
+3. Updates the Pacman repository database (`custom-helium.db.tar.gz`) with `repo-add`.
 4. Publishes it to the `repo` release.
 
-Your system receives updates automatically whenever you run `sudo pacman -Syu`.
+Your system receives official AUR-identical binary updates automatically whenever you run `sudo pacman -Syu`.
