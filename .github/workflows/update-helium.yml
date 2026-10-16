@@ -140,7 +140,8 @@ jobs:
               # Update Pacman database
               cd /repo
               PKG_FILE=$(ls helium-browser-bin-*.pkg.tar.zst | sort -V | tail -n 1)
-              repo-add -n -R custom-helium.db.tar.gz "${PKG_FILE}"
+              repo-remove custom-helium.db.tar.gz helium-browser-bin || true
+              repo-add -R custom-helium.db.tar.gz "${PKG_FILE}"
 
               rm -f custom-helium.db custom-helium.files
               cp -f custom-helium.db.tar.gz custom-helium.db
